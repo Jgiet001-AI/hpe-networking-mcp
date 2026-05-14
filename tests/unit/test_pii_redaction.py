@@ -548,10 +548,21 @@ class TestStructuralCoaContexts:
         assert cls == FieldClassification.TOKENIZE_IDENTIFIER
         assert kind == TokenKind.COA
 
-    def test_coa_servers_secret_classifies_as_coa_secret(self) -> None:
+    def test_coa_servers_secret_classifies_as_rad_secret(self) -> None:
+        # Issue #321: CoA secrets joined the RAD family so the combined
+        # CoA + RADIUS migration tool (#322) can emit the same plaintext
+        # in radius_secret + coa_secret + coa_servers[].secret and have
+        # the keymap return a single [[RAD:uuid]] for all three.
         cls, kind = classify_field("secret", "MyCoaSecret123!", parent_field_name="coa_servers")
         assert cls == FieldClassification.TOKENIZE_SECRET
-        assert kind == TokenKind.COA
+        assert kind == TokenKind.RAD
+
+    def test_coa_secret_flat_field_classifies_as_rad(self) -> None:
+        # Issue #321: the flat ``coa_secret`` field name is what the
+        # combined migration tool emits in its output structure.
+        cls, kind = classify_field("coa_secret", "MyCoaSecret123!")
+        assert cls == FieldClassification.TOKENIZE_SECRET
+        assert kind == TokenKind.RAD
 
     def test_bare_ip_outside_coa_wrapper_still_passes_through(self) -> None:
         # Per v2.3.1.2: plain ``ip`` is not a tokenized field. Only the
@@ -587,7 +598,9 @@ class TestStructuralCoaContextsEndToEnd:
             assert TOKEN_RE.fullmatch(record["Name"]).group(1) == "COA"
         assert len({r["Name"] for r in records}) == 2
 
-    def test_mist_coa_servers_shape_tokenizes_ip_and_secret(self) -> None:
+    def test_mist_coa_servers_shape_tokenizes_ip_as_coa_and_secret_as_rad(self) -> None:
+        # Issue #321: split CoA endpoint identifier (COA prefix) from
+        # CoA shared secret (RAD prefix, joining the RADIUS family).
         keymap = SessionKeymap()
         tokenizer = Tokenizer(keymap, session_id="test-session-coa-mist", max_entries=100)
 
@@ -601,13 +614,141 @@ class TestStructuralCoaContextsEndToEnd:
         out = tokenize_response(response, tokenizer)
         servers = out["coa_servers"]
         for server in servers:
+            # IP — identifier — keeps COA prefix.
             assert TOKEN_RE.fullmatch(server["ip"]) is not None
             assert TOKEN_RE.fullmatch(server["ip"]).group(1) == "COA"
+            # Secret — joined to RAD family for combined-tool dedup (#321 / #322).
             assert TOKEN_RE.fullmatch(server["secret"]) is not None
-            assert TOKEN_RE.fullmatch(server["secret"]).group(1) == "COA"
+            assert TOKEN_RE.fullmatch(server["secret"]).group(1) == "RAD"
         # Operational metadata passes through.
         assert servers[0]["port"] == 3799
         assert servers[0]["enabled"] is True
+
+    def test_radius_secret_and_coa_secret_share_token_when_same_plaintext(self) -> None:
+        """Issue #321 / #322 — the combined CoA + RADIUS migration tool
+        emits the same plaintext in both ``radius_secret`` and ``coa_secret``
+        fields when servers are co-located. Both fields now classify as
+        ``TokenKind.RAD``, so the keymap returns a single token for both,
+        and the AI sees the secret reused literally across the structure.
+        """
+        keymap = SessionKeymap()
+        tokenizer = Tokenizer(keymap, session_id="test-session-321-shared", max_entries=100)
+
+        response = {
+            "radius_server": "192.168.20.70",
+            "radius_secret": "aruba123!",
+            "coa_endpoint": "192.168.20.70",
+            "coa_secret": "aruba123!",
+            "co_located": True,
+        }
+        out = tokenize_response(response, tokenizer)
+
+        # Same plaintext + same TokenKind → same token via keymap.
+        assert out["radius_secret"] == out["coa_secret"]
+        assert TOKEN_RE.fullmatch(out["radius_secret"]).group(1) == "RAD"
+
+
+class TestWrapperKeyRewrite:
+    """Issue #319 — when a platform surfaces a single-record detail block
+    under a wrapper key embedding the record identifier (e.g. AOS 8's
+    ``show aaa rfc-3576-server <ip>`` returns ``{"RFC 3576 Server <ip>":
+    [...]}``), the walker must rewrite the key so the embedded value is
+    tokenized.
+
+    The structural rules only consult NORMALIZED field names, so the raw
+    key string carrying the IP would otherwise surface verbatim. The fix
+    is keyed off ``WRAPPER_KEY_PATTERNS`` in ``rules.py`` and applies
+    in ``_walk_dict``; round-trip detokenization is extended to dict
+    keys in ``_detokenize_walk``.
+    """
+
+    def test_aos8_rfc_3576_detail_wrapper_key_gets_rewritten(self) -> None:
+        keymap = SessionKeymap()
+        tokenizer = Tokenizer(keymap, session_id="test-session-319-detail", max_entries=100)
+
+        # Live-captured AOS 8 shape from ``show aaa rfc-3576-server 192.168.20.70``.
+        response = {
+            "RFC 3576 Server 192.168.20.70": [
+                {"Parameter": "Key", "Value": "********"},
+                {"Parameter": "RadSec", "Value": "Disabled"},
+                {"Parameter": "Window Duration", "Value": "300"},
+            ],
+        }
+        out = tokenize_response(response, tokenizer)
+
+        # The original IP-bearing key is gone.
+        assert "RFC 3576 Server 192.168.20.70" not in out
+        # A rewritten key with a COA token is present.
+        rewritten_keys = list(out.keys())
+        assert len(rewritten_keys) == 1
+        rewritten_key = rewritten_keys[0]
+        assert rewritten_key.startswith("RFC 3576 Server ")
+        token_part = rewritten_key[len("RFC 3576 Server ") :]
+        match = TOKEN_RE.fullmatch(token_part)
+        assert match is not None, f"expected COA token, got {token_part!r}"
+        assert match.group(1) == "COA"
+
+    def test_same_ip_in_list_and_detail_forms_share_a_token(self) -> None:
+        """Migration tooling depends on the same IP across list-form and
+        detail-form wrappers getting the same token — fans out correctly
+        when the AI references the server by either shape.
+        """
+        keymap = SessionKeymap()
+        tokenizer = Tokenizer(keymap, session_id="test-session-319-correlate", max_entries=100)
+
+        # List form first (matches the existing ``rfc_3576_server_list[].name``
+        # structural rule → COA).
+        list_resp = {
+            "RFC 3576 Server List": [
+                {"Name": "192.168.20.70", "Profile Status": None, "References": "0"},
+            ],
+        }
+        list_out = tokenize_response(list_resp, tokenizer)
+        list_token = list_out["RFC 3576 Server List"][0]["Name"]
+        assert TOKEN_RE.fullmatch(list_token).group(1) == "COA"
+
+        # Detail form second — same IP. New wrapper-key rewrite must use
+        # the SAME token via the keymap (same kind, same plaintext).
+        detail_resp = {
+            "RFC 3576 Server 192.168.20.70": [{"Parameter": "Key", "Value": "********"}],
+        }
+        detail_out = tokenize_response(detail_resp, tokenizer)
+        detail_key = next(iter(detail_out.keys()))
+        detail_token = detail_key[len("RFC 3576 Server ") :]
+        assert detail_token == list_token, "list-form and detail-form must share the COA token"
+
+    def test_wrapper_key_round_trips_via_detokenize_arguments(self) -> None:
+        """If the AI passes the rewritten wrapper-key dict back as an
+        argument, the inbound walker must restore the cleartext IP before
+        the call hits the downstream platform.
+        """
+        keymap = SessionKeymap()
+        tokenizer = Tokenizer(keymap, session_id="test-session-319-roundtrip", max_entries=100)
+
+        response = {
+            "RFC 3576 Server 192.168.20.70": [{"Parameter": "Key", "Value": "********"}],
+        }
+        tokenized = tokenize_response(response, tokenizer)
+        rewritten_key = next(iter(tokenized.keys()))
+
+        # AI hands the dict back as an argument.
+        arguments = {"payload": tokenized}
+        restored_args, unknown = detokenize_arguments(arguments, tokenizer)
+
+        assert unknown == []
+        restored_payload = restored_args["payload"]
+        assert "RFC 3576 Server 192.168.20.70" in restored_payload
+        assert rewritten_key not in restored_payload
+
+    def test_wrapper_pattern_no_match_is_noop(self) -> None:
+        """A dict whose keys don't match any wrapper pattern is unchanged."""
+        keymap = SessionKeymap()
+        tokenizer = Tokenizer(keymap, session_id="test-session-319-noop", max_entries=100)
+
+        response = {"some_unrelated_key": {"inner": "value"}}
+        out = tokenize_response(response, tokenizer)
+        assert "some_unrelated_key" in out
+        assert out["some_unrelated_key"] == {"inner": "value"}
 
 
 class TestKeymapReplayOnSkipPath:
