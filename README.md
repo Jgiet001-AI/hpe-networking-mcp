@@ -24,22 +24,27 @@ Managing HPE networking infrastructure with AI assistants today means juggling m
 | **Events** | ✅ | ✅ | — | ✅ | — | — | ✅ |
 | **Alerts / Alarms** | ✅ | ✅ | — | ✅ | ✅ | — | ✅ |
 | **Audit Logs** | ✅ | ✅ | ✅ | ✅ | — | — | ✅ |
-| **Application Visibility** | — | ✅ | — | — | — | ✅ | — |
+| **Application Visibility** | ✅ | ✅ | — | — | — | ✅ | — |
 | **Troubleshooting (Ping/Traceroute/Bounce)** | ✅ | ✅ | — | — | — | — | ✅ |
 | **Session Control / Client Disconnect** | ✅ | ✅ | — | ✅ | — | — | ✅ |
 | **Configuration Management** | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ |
 | **Configuration Write (CRUD)** | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ |
 | **Radio Resource Management** | ✅ | — | — | — | — | — | ✅ |
-| **Rogue AP Detection** | ✅ | — | — | — | — | — | ✅ |
+| **Rogue AP Detection** | ✅ | ✅ | — | — | — | — | ✅ |
 | **Firmware Management** | ✅ | ✅ | — | — | — | — | ✅ |
-| **Subscriptions / Licensing** | — | — | ✅ | ✅ | — | — | ✅ |
-| **User Management** | — | — | ✅ | ✅ | — | ✅ | — |
+| **Subscriptions / Licensing** | ✅ | — | ✅ | ✅ | — | — | ✅ |
+| **User Management** | ✅ | ✅ | ✅ | ✅ | — | ✅ | — |
 | **Workspaces** | — | — | ✅ | — | — | — | — |
 | **Scope & Configuration Hierarchy** | ✅ | ✅ | — | — | — | ✅ | ✅ |
-| **Guest Management** | — | — | — | ✅ | — | — | — |
+| **Guest Management** | ✅ | ✅ | — | ✅ | — | — | — |
 | **NAC / Policy Management** | ✅ | ✅ | — | ✅ | — | — | — |
-| **Endpoint Profiling** | ✅ | — | — | ✅ | — | — | — |
-| **Certificates** | — | — | — | ✅ | — | — | — |
+| **Endpoint Profiling** | ✅ | ✅ | — | ✅ | — | — | — |
+| **Certificates** | ✅ | ✅ | — | ✅ | — | — | — |
+| **Webhooks** | ✅ | ✅ | — | — | — | — | — |
+| **Reports / Scheduled Reports** | ✅ | ✅ | — | ✅ | — | — | — |
+| **Floor Plans / Sitemaps** | ✅ | ✅ | — | — | — | — | — |
+| **BLE Asset Tracking / IoT Beacons** | ✅ | ✅ | — | — | — | — | — |
+| **Marvis / AI Assistant** | ✅ | — | — | — | — | — | — |
 | **Datacenter Blueprints / Templates** | — | — | — | — | ✅ | — | — |
 | **Virtual Networks / EVPN / Routing Zones** | — | — | — | — | ✅ | — | — |
 | **Connectivity Templates / Policy Apply** | — | — | — | — | ✅ | — | — |
