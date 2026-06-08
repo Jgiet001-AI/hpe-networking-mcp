@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.7.0] - 2026-06-07
+
+**Minor — aos-migration skill: target-architecture questionnaire (Stage 6.5).** Replaces the skill's "auto-derive everything, override later" model with an explicit post-verdict questionnaire, so the operator *decides* the target architecture rather than having it inferred-and-applied.
+
+- **New Stage 6.5 — Target-architecture questionnaire** (runs after the readiness verdict, on operator `yes`, before the translation plan): **Q1 per-SSID forward mode** (`Bridged` / `Tunneled` / `Bridged-and-Tunneled` / `Hybrid`) → `wlan_ssid` `target_mode`; **Q2 gateway topology** (only if any SSID survives on gateways) → `gateway_cluster` `cluster_strategy` (`intent_site` / `intent_site`+`intent_manual` / `ha_only`). Asked via `elicit()`, adaptive, pre-filled from Act I detection. The source says what *is*; the operator decides what they *want* (e.g. going controllerless).
+- **Detection stays as the recommendation engine.** Stage 2 now *detects* per-SSID `forward_mode` + the SSID→cluster map; Stage 7 Step 4's cluster-mode derivation becomes the Stage 6.5 default. Removed the "no configuration interview", "operator does not pick cluster mode", and "override when reviewing" framing throughout — those no longer reflect the flow.
+- **Verdict separation (so the questionnaire can't be locked out).** Stage 3 findings now split into source-readiness/orchestration (verdict-gating) vs **target-architecture-dependent (provisional)**. The pre-questionnaire BLOCKED verdict is computed from source-readiness only — a per-target-mode REGRESSION (scored against the *recommended* mode) never suppresses the gate, so an operator can still reach Stage 6.5 to pick e.g. Bridged/controllerless and make those findings moot (a documented INVARIANT guards this). Provisional findings are re-scored against the operator's chosen modes in Stage 6.5 and folded into the Act II plan. Decisions are keyed by composite `<source_scope>/<vap-name>` (not bare ESSID) so same-ESSID VAPs across scopes don't collide; Stage 9b loops guard missing decisions with a `skip_reason` instead of indexing.
+- **Cluster scope is a separate, explicitly-collected decision** — Stage 6.5 Q2 records the intended Central scope **name** (`target_scope_name`) per surviving cluster (strategy ≠ placement), resolved to a `scope_id`/`<TBD:...>` later in Stage 9b (the scope may not exist yet); Stage 9b never silently defaults a missing cluster scope to Global, it skips with a `skip_reason`. The **EMPTY-SOURCE** verdict now has explicit gate behavior (proceed-on-`yes` runs Act II on defaults, skipping Stage 6.5). Q1 defines "translatable VAP" to match the Stage 9b preview filter (skip system/default/missing-ssid-profile).
+- **Stage 9b wiring** — new preview subsections for `central:gateway_cluster` (2f) and `central:wlan_ssid` (2g) that consume the Stage 6.5 decisions (`target_mode`, `cluster_strategy`, `gw_cluster_list`, bridge/tunnel scopes) into `central_translation_preview` calls.
+
+Skill-only change (no tool/code changes); 1685 tests pass.
+
 ## [3.3.6.0] - 2026-06-07
 
 **Minor — `central:wlan_ssid` dual-profile (`bridged_and_tunneled`) + essid alias.** Completes the per-SSID mode fork: the same SSID can now exist in **both** forward-modes at once across different locations (large campus tunneled, smaller sites bridged). Preview-only.
