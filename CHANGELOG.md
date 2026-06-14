@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.13.5] - 2026-06-14
+
+**Patch — feat(skill): `central-site-dashboard` — single-site Central operational dashboard via Generative UI.** The follow-up to the v3.3.13.4 GenUI prewarm/guidance work, and the bigger perceived-latency win: a fixed runbook for "build me a dashboard for site X" so the model fetches once and renders once instead of burning ~20+ exploratory round-trips rediscovering schemas and fighting the response envelope.
+
+### Added
+- **`src/hpe_networking_mcp/skills/central-site-dashboard.md`** (skill #16). Gathers one Central site's health score, device status by type, client counts, and active alerts (3-4 calls), then renders through `generate_prefab_ui`. Bakes in the exact, live-verified response-shape unwraps that trip ad-hoc attempts: `central_get_site_health` `data` is a **list** (take `[0]`); `central_get_devices` returns a **list or the string "No devices found…"**; `central_get_alerts` rows live under `data["items"]` (not `result`) and the call **requires `site_id`**. The gather code was run verbatim against a live tenant before shipping. Central-only / single-site by design; cross-platform + ClearPass overlay are deferred follow-ups. Always emits a text walkthrough beneath the board so it stays useful in non-MCP-Apps clients (where the widget no-ops). Read-only.
+
+### Docs
+- `docs/TOOLS.md` (Bundled skills table) + `INSTRUCTIONS.md` (trigger-phrase → skill mapping) updated with the new skill.
+
 ## [3.3.13.4] - 2026-06-14
 
 **Patch — perf: speed up Generative-UI (Prefab) dashboards.** Two changes that cut the time to a rendered dashboard when `MCP_APP_ENABLE=true`.
@@ -212,7 +222,7 @@ New unit tests cover each guard (Central/GreenLake 503 paths, the safe transport
 
 ## [3.3.10.0] - 2026-06-10
 
-**Minor — new bundled skill `central-ucc-quality`: trustworthy UCC (voice/video) call-quality on AOS-10 APs, with a Generative-UI dashboard.** Closes #400. Asking "check call quality on the garage AP" now runs a vetted correlation runbook instead of a naive single-command read.
+**Minor — new bundled skill `central-ucc-quality`: trustworthy UCC (voice/video) call-quality on AOS-10 APs, with a Generative-UI dashboard.** Closes #400. Asking "check call quality on AP HQ-AP-1" now runs a vetted correlation runbook instead of a naive single-command read.
 
 ### Added
 - **`central-ucc-quality` skill** — correlates three live UCM tables from a single atomic `central_show_commands` snapshot to report *genuinely-live* calls (not stale records) with per-stream quality:
@@ -227,7 +237,7 @@ This is a runbook-only change — no new tools, no code paths altered. Both skil
 
 ## [3.3.9.0] - 2026-06-10
 
-**Minor — Generative UI dashboards + a single `MCP_APP_ENABLE` switch for all MCP-Apps providers.** The model can now build a live, interactive dashboard from the data it gathered — "build me an MRT dashboard for site HOME" → it pulls the Central/ClearPass data, then calls `generate_prefab_ui` and a Prefab app (tabs, KPI cards, charts, searchable data tables) renders inline. Live-validated end to end.
+**Minor — Generative UI dashboards + a single `MCP_APP_ENABLE` switch for all MCP-Apps providers.** The model can now build a live, interactive dashboard from the data it gathered — "build me an MRT dashboard for site HQ" → it pulls the Central/ClearPass data, then calls `generate_prefab_ui` and a Prefab app (tabs, KPI cards, charts, searchable data tables) renders inline. Live-validated end to end.
 
 ### ⚠️ BREAKING
 - **`MCP_ENABLE_FILE_UPLOAD` is removed; use `MCP_APP_ENABLE`.** A single switch now gates *all* MCP-Apps capabilities (the `FileUpload` provider **and** the new `GenerativeUI` provider) — both emit `ui://` MCP-Apps resources that render only in MCP-Apps hosts (Claude Desktop / ChatGPT / claude.ai). If you set `MCP_ENABLE_FILE_UPLOAD=true`, change it to `MCP_APP_ENABLE=true` (file upload silently disables otherwise).
@@ -1060,7 +1070,7 @@ Next PR brings in the 197 net-new Central config tools as hand-curated-style wra
 
 **Patch — harden `cross-platform-rf-check` against three operator-transcript failure modes. Closes #340 and #342.**
 
-Operator ran *"Do an RF check at HOME in Central"* on GitHub Copilot (Sonnet 4.6); the skill loaded but the in-sandbox AI hit two crashes AND ignored the user's platform scope:
+Operator ran *"Do an RF check at HQ in Central"* on GitHub Copilot (Sonnet 4.6); the skill loaded but the in-sandbox AI hit two crashes AND ignored the user's platform scope:
 
 1. (#340) `Sandbox error: Exception: Unknown tool: mist_get_self` — the AI dispatched the Mist tool by bare name through `call_tool("mist_get_self", {})`. That's the #328 footgun: the ~1000 spec-driven Mist tools are registered but not in the sandbox's resolvable catalog by bare name; they must go through `mist_invoke_tool`. The skill had Step 2 worded as a direct call (`mist_list_org_sites(org_id=...)`) with no dispatch warning — and said `org_id` "comes from `health` or the Mist session context" without a concrete tool, so the AI extrapolated `mist_get_self` and used the wrong dispatch pattern.
 2. (#340) `AttributeError: 'list' object has no attribute 'get'` — the AI called `radio["radioStats"].get("channelUtilization")`. Central's `central_get_ap_details` returns `radioStats` as a single-element **list** (`[{"channelUtilization": ..., "noiseFloor": ...}]`), not a dict. The skill's Step 6 wording (*"`radioStats` **with** `channelUtilization` and `noiseFloor`"*) implied a dict.
@@ -1087,7 +1097,7 @@ Operator ran *"Do an RF check at HOME in Central"* on GitHub Copilot (Sonnet 4.6
 
 **Patch — enforce "skills first" at the tool layer instead of just implying it. Closes #338.**
 
-Operator: *"Do an RF check for HOME in Central"* → the AI went straight to `search` / `execute` and improvised; it never called `skills_list`, so it never found `cross-platform-rf-check`. Its own diagnosis: the `skills_list` description was a soft, conditional trigger ("Use this when the user asks to run an audit, migration…") that an RF check "didn't feel like," and `search` / `execute` — the tools it actually used — had **no gate** pointing back to skills. "The root issue is that 'check skills first' is *implied* rather than *enforced* at the tool layer."
+Operator: *"Do an RF check for HQ in Central"* → the AI went straight to `search` / `execute` and improvised; it never called `skills_list`, so it never found `cross-platform-rf-check`. Its own diagnosis: the `skills_list` description was a soft, conditional trigger ("Use this when the user asks to run an audit, migration…") that an RF check "didn't feel like," and `search` / `execute` — the tools it actually used — had **no gate** pointing back to skills. "The root issue is that 'check skills first' is *implied* rather than *enforced* at the tool layer."
 
 v3.1.0.12 (#336) fixed the `skills_list` *output* to push toward `skills_load` — but that only helps once `skills_list` is called. This release makes sure it gets called.
 
@@ -2452,7 +2462,7 @@ Completes the Stage 7 cluster-mode derivation work that v2.5.1.3 left as TBD. Th
 
 ### Validated against live data
 
-Lab probing on ArubaMM-VA at 172.23.4.21 (AOS 8.12.0.5):
+Lab probing on an ArubaMM-VA at 192.0.2.21 (AOS 8.12.0.5):
 
 | Cluster | Origin scope | APs adopted | AOS 10 mode (derived) | AOS 10 target tool flow |
 |---|---|---|---|---|
