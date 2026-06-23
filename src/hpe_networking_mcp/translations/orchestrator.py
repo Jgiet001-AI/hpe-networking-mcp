@@ -78,8 +78,19 @@ class TranslationPlan:
         """Anything the caller could not resolve — assignment scopes AND gateway
         clusters. A tunneled/hybrid/dual overlay with no cluster binding is as
         incomplete as a WLAN assigned to a non-existent scope; both must block
-        before any write (the writer flags clusters via ``unresolved_clusters``)."""
-        out = [c["unresolved"] for c in self.calls if c.get("unresolved")]
+        before any write (the writer flags clusters via ``unresolved_clusters``).
+
+        A call's ``unresolved`` may be a single dict (one scope, the Central
+        writer) or a list of dicts (several scopes from one call, the Mist
+        template) — both are flattened to one flat list of ``{kind, name}`` dicts.
+        """
+        out: list[dict[str, Any]] = []
+        for c in self.calls:
+            u = c.get("unresolved")
+            if isinstance(u, list):
+                out.extend(u)
+            elif u:
+                out.append(u)
         out += [
             {"kind": "gateway_cluster", "name": c["path"].split("/")[-1]}
             for c in self.calls

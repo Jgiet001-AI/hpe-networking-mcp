@@ -273,3 +273,21 @@ async def test_execute_idempotent_false_skips_exists_check() -> None:
     assert res[0]["action"] == "created"
     # only the POST happened — no GET probe
     assert [b["path"] for b in fake.bodies] == ["/wlans"]
+
+
+@pytest.mark.asyncio
+async def test_mist_unresolved_scope_flattens_and_blocks() -> None:
+    # Casey #508: the Mist template stores unresolved as a LIST; plan.unresolved
+    # must flatten it to dicts (not nest), so preview() works and execute blocks.
+    from hpe_networking_mcp.translations.canonical.wlan import Assignment, CanonicalWlan, KeyMgmt, Security
+
+    canon = CanonicalWlan(ssid="X", security=Security(key_mgmt=KeyMgmt.OPEN), assignment=Assignment(sites=["GHOST"]))
+    calls = orch.from_canonical("mist", orch.WLAN, canon, org_id="ORG")
+    p = orch.TranslationPlan("central", "mist", orch.WLAN, canon, calls)
+    assert {"kind": "site", "name": "GHOST"} in p.unresolved
+    assert all(isinstance(u, dict) for u in p.unresolved)  # flat, not nested
+    p.preview()  # must not raise on the list-shaped unresolved
+    fake = CapturingClient()
+    res = await orch.execute(fake.command, p)
+    assert res[0]["action"] == "blocked_unresolved"
+    assert fake.bodies == []  # nothing written
