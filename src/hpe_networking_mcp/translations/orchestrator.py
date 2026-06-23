@@ -21,9 +21,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from hpe_networking_mcp.translations.readers.aos8 import aos8_read_wlan
+from hpe_networking_mcp.translations.readers.central import central_read_wlan
 from hpe_networking_mcp.translations.readers.mist import mist_read_wlan
 from hpe_networking_mcp.translations.writers.central import central_write_wlan
 from hpe_networking_mcp.translations.writers.central_radius import central_write_server_group
+from hpe_networking_mcp.translations.writers.mist import mist_write_wlan
 
 # ---------------------------------------------------------------------------
 # Registry
@@ -35,6 +37,7 @@ WLAN = "wlan"
 _READERS: dict[tuple[str, str], Callable[..., Any]] = {
     ("mist", WLAN): mist_read_wlan,
     ("aos8", WLAN): aos8_read_wlan,
+    ("central", WLAN): central_read_wlan,
 }
 
 # (target_platform, kind) -> ordered list of writer(canon, **ctx) -> [call descriptors].
@@ -42,6 +45,7 @@ _READERS: dict[tuple[str, str], Callable[..., Any]] = {
 # chains each writer's first call onto the previous writer's last call.
 _WRITERS: dict[tuple[str, str], list[Callable[..., list[dict[str, Any]]]]] = {
     ("central", WLAN): [central_write_server_group, central_write_wlan],
+    ("mist", WLAN): [mist_write_wlan],
 }
 
 
@@ -278,8 +282,10 @@ async def execute(
     # auth-server create) would leave the dependent WLAN/assignment to run against
     # a half-built config.
     done: set[int] = set()
+    captured: dict[str, Any] = {}  # values captured from responses (e.g. a Mist template id)
     for i, call in enumerate(plan.calls):
-        path, method, body = call["path"], call["method"], call.get("body", {})
+        path, method = call["path"], call["method"]
+        body = dict(call.get("body", {}))  # copy: inject must not mutate the plan
         is_assignment = path == _CONFIG_ASSIGNMENTS
 
         unmet = [d for d in call.get("depends_on", []) if d not in done]
@@ -287,7 +293,14 @@ async def execute(
             results.append({"path": path, "action": "blocked_dependency_failed", "depends_on": unmet})
             continue
 
-        if ensure_or_create and method == "POST":
+        # inject values captured from earlier calls (Mist is ID-based: the WLAN
+        # body's template_id comes from the template create's response).
+        for body_key, cap_key in (call.get("inject") or {}).items():
+            body[body_key] = captured.get(cap_key)
+
+        # ensure-or-create only applies to single-resource creates (Central names
+        # the resource in the path). Collection POSTs (Mist) mark idempotent=False.
+        if ensure_or_create and method == "POST" and call.get("idempotent", True):
             already = await _assignment_exists(command, body) if is_assignment else await _exists(command, path)
             if already:
                 results.append({"path": path, "action": "skipped_exists", "code": 200})
@@ -295,6 +308,8 @@ async def execute(
                 continue
 
         if dry_run:
+            if call.get("capture"):
+                captured[call["capture"]] = f"<{call['capture']}>"
             results.append({"path": path, "action": "planned", "code": None})
             done.add(i)
             continue
@@ -304,9 +319,19 @@ async def execute(
         ok = 200 <= code < 300
         if ok:
             done.add(i)
+            if call.get("capture"):
+                captured[call["capture"]] = _extract_id(r)
         action = ("assigned" if is_assignment else "created") if ok else "failed"
         row: dict[str, Any] = {"path": path, "action": action, "code": code}
         if not ok:
             row["msg"] = r.get("msg")
         results.append(row)
     return results
+
+
+def _extract_id(response: dict[str, Any]) -> Any:
+    """Pull a created object's id from a response (top-level / msg / data)."""
+    for src in (response, response.get("msg"), response.get("data")):
+        if isinstance(src, dict) and src.get("id"):
+            return src["id"]
+    return None

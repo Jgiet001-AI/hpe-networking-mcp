@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.3.0] - 2026-06-23
+
+**Minor — feat(translations): reverse direction — Central reader + Mist writer (Central→Mist, AOS8→Mist).** Builds on the 3.4.2.0 forward foundation (References #279): adds the inverse so a Central WLAN (or an AOS8 WLAN) can be translated *to* Mist through the same canonical model + orchestrator. Still **additive / not wired into any tool** — the cutover is a later PR. Live-verified end-to-end: a Central enterprise WLAN round-trips to Mist (template + WLAN created, inline RADIUS, correct opmode/VLAN), cleaned up both sides.
+
+### Added
+- `translations/readers/central.py` — Central `wlan-ssids` → canonical (inverts the Central writer): opmode→triplet, essid (literal + alias), VLAN, performance/isolation/WMM, and a RADIUS walk of `auth-server-group → server-group → auth-servers` (incl. AUTH_AND_COA) into canonical auth/acct/CoA. An `auth-server-address` matching an `ALIAS_AUTH_SERVER_ADDRESS` alias maps back to a `{{var}}` host; the system `sys_central_nac` group is detected as NAC; assignment is rebuilt from `config-assignment` rows.
+- `translations/writers/mist.py` — canonical → Mist: a per-WLAN WLAN template (`applies` mapped from the assignment by name→id, unresolved names flagged) + the org WLAN. Triplet → Mist `auth.type`+`pairwise`; **inline** `auth_servers`/`acct_servers`/`coa_servers`; NAC → `mist_nac`; cloud-MPSK → `dynamic_psk`; `{{var}}` hosts pass through.
+- `orchestrator.py` — registered `central:wlan` reader and `mist:wlan` writer; `execute()` gained a general **capture/inject** mechanism (a call captures its response `id`; a dependent call injects it) so Mist's ID-based `template_id` threading works, plus an `idempotent` flag so Mist collection-POSTs skip the Central-style GET-exists probe.
+- 34 unit tests across the Central reader, Mist writer, and the new executor capture/inject paths.
+
 ## [3.4.2.0] - 2026-06-22
 
 **Minor — feat(translations): canonical reader/writer translation engine (forward direction).** Foundation of the rebuilt translation engine (References #279): a hub-and-spoke canonical model that replaces pairwise mappers for new source/target pairs. Readers turn a platform's config into a platform-neutral `CanonicalWlan`; writers turn that into ordered target API-call descriptors; an orchestrator plans + executes them with ensure-or-create idempotency. This ships the **forward** direction end-to-end — **Mist→Central** and **AOS8→Central** WLAN + RADIUS — live-verified against the tenants. It is **additive and not yet wired into any tool/skill** (the existing JSON `emit_calls` engine still backs the AOS8-JSON translations); the cutover that repoints the tooling is a later PR. No user-facing tool changes, so tool counts / version-gated docs are unchanged.
