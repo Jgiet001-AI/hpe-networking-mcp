@@ -202,3 +202,106 @@ async def test_execute_blocks_dependents_on_failure() -> None:
     assert by["EAP"] == "blocked_dependency_failed"  # WLAN depends on it → blocked
     # the WLAN was never POSTed
     assert "network-config/v1alpha1/wlan-ssids/EAP" not in [p for _, p in fake.calls]
+
+
+def test_central_and_mist_registered() -> None:
+    s = orch.supported()
+    assert "central:wlan" in s["readers"]
+    assert "mist:wlan" in s["writers"]
+
+
+def test_aos8_to_mist_plan_composes() -> None:
+    # AOS8 reader → Mist writer (composition): a bridged open WLAN plans a Mist
+    # template + WLAN with the capture/inject markers.
+    vap = {"profile-name": "V", "ssid_prof": {"profile-name": "SP"}, "vlan": {"vlan": "10"}}
+    sp = {"profile-name": "SP", "essid": {"essid": "CORP"}, "opmode": {"wpa2-psk-aes": True}}
+    p = orch.plan("aos8", "mist", orch.WLAN, vap, reader_ctx={"ssid_profiles": [sp]}, writer_ctx={"org_id": "ORG"})
+    paths = [c["path"] for c in p.calls]
+    assert paths == ["/api/v1/orgs/ORG/templates", "/api/v1/orgs/ORG/wlans"]
+    assert p.calls[0]["capture"] == "template_id"
+
+
+class CapturingClient:
+    """Fake whose POST returns an id and records bodies it received."""
+
+    def __init__(self) -> None:
+        self.bodies: list[dict] = []
+
+    async def command(self, method, path, api_params=None, api_data=None):
+        self.bodies.append({"path": path, "body": api_data})
+        if method == "POST":
+            return {"code": 200, "msg": {"id": "TID-123"}, "id": "TID-123"}
+        return {"code": 200, "msg": {}}
+
+
+@pytest.mark.asyncio
+async def test_execute_capture_inject_threads_id() -> None:
+    fake = CapturingClient()
+    calls = [
+        {
+            "method": "POST",
+            "path": "/templates",
+            "body": {"name": "t"},
+            "depends_on": [],
+            "capture": "template_id",
+            "idempotent": False,
+        },
+        {
+            "method": "POST",
+            "path": "/wlans",
+            "body": {"ssid": "X"},
+            "depends_on": [0],
+            "inject": {"template_id": "template_id"},
+            "idempotent": False,
+        },
+    ]
+    p = orch.TranslationPlan("central", "mist", orch.WLAN, None, calls)
+    res = await orch.execute(fake.command, p)
+    assert [r["action"] for r in res] == ["created", "created"]
+    # the WLAN body received the captured template id
+    wlan_body = next(b["body"] for b in fake.bodies if b["path"] == "/wlans")
+    assert wlan_body["template_id"] == "TID-123"
+
+
+@pytest.mark.asyncio
+async def test_execute_idempotent_false_skips_exists_check() -> None:
+    # idempotent=False must POST without a GET-exists probe (Mist collection POST)
+    fake = CapturingClient()
+    calls = [{"method": "POST", "path": "/wlans", "body": {"ssid": "X"}, "depends_on": [], "idempotent": False}]
+    p = orch.TranslationPlan("central", "mist", orch.WLAN, None, calls)
+    res = await orch.execute(fake.command, p)
+    assert res[0]["action"] == "created"
+    # only the POST happened — no GET probe
+    assert [b["path"] for b in fake.bodies] == ["/wlans"]
+
+
+@pytest.mark.asyncio
+async def test_mist_unresolved_scope_flattens_and_blocks() -> None:
+    # Casey #508: the Mist template stores unresolved as a LIST; plan.unresolved
+    # must flatten it to dicts (not nest), so preview() works and execute blocks.
+    from hpe_networking_mcp.translations.canonical.wlan import Assignment, CanonicalWlan, KeyMgmt, Security
+
+    canon = CanonicalWlan(ssid="X", security=Security(key_mgmt=KeyMgmt.OPEN), assignment=Assignment(sites=["GHOST"]))
+    calls = orch.from_canonical("mist", orch.WLAN, canon, org_id="ORG")
+    p = orch.TranslationPlan("central", "mist", orch.WLAN, canon, calls)
+    assert {"kind": "site", "name": "GHOST"} in p.unresolved
+    assert all(isinstance(u, dict) for u in p.unresolved)  # flat, not nested
+    p.preview()  # must not raise on the list-shaped unresolved
+    fake = CapturingClient()
+    res = await orch.execute(fake.command, p)
+    assert res[0]["action"] == "blocked_unresolved"
+    assert fake.bodies == []  # nothing written
+
+
+@pytest.mark.asyncio
+async def test_aos8_wep_to_mist_blocks() -> None:
+    # Casey #508 r2: a WEP WLAN has no Mist mapping -> plan flags it unsupported
+    # and execute() blocks before any write.
+    vap = {"profile-name": "V", "ssid_prof": {"profile-name": "SP"}}
+    sp = {"profile-name": "SP", "essid": {"essid": "LEGACY"}, "opmode": {"static-wep": True}}
+    p = orch.plan("aos8", "mist", orch.WLAN, vap, reader_ctx={"ssid_profiles": [sp]}, writer_ctx={"org_id": "ORG"})
+    assert any(u["kind"] == "unsupported_auth" for u in p.unresolved)
+    fake = CapturingClient()
+    res = await orch.execute(fake.command, p)
+    assert res[0]["action"] == "blocked_unresolved"
+    assert fake.bodies == []
