@@ -1,0 +1,110 @@
+name: Sync GreenLake OAS
+
+# Pulls the vendored HPE GreenLake public northbound OpenAPI specs from the
+# developer portal weekly and opens an auto-merge PR with the refreshed copies
+# if they changed.
+#
+# Source: developer.greenlake.hpe.com is a Redocly SPA. The spec index is
+# /llms.txt; raw specs are the /_bundle/...json?download files. Casing is
+# preserved upstream (openApi.json / openapiBeta.json / @v1) so URLs can't be
+# derived — they're pinned + verified in vendor/greenlake/sources.json.
+# .github/scripts/fetch_greenlake_oas.py downloads, validates, and canonicalizes
+# each spec, and warns about newly-published services. **Tool regeneration does
+# NOT happen here** — the maintainer regenerates the GreenLake tool surface at
+# release time so tool-surface changes are reviewed before tagging.
+#
+# Branch protection on `main` requires PRs + status checks, and the default
+# GITHUB_TOKEN cannot trigger downstream workflows on a PR it opens, so this
+# uses the same fine-grained PAT as the other OAS syncs (secret: MIST_SYNC_PAT)
+# to open the PR and enable auto-merge.
+
+on:
+  schedule:
+    # Weekly, Monday 08:00 UTC (staggered after the Mist/Central syncs).
+    - cron: "0 8 * * 1"
+  workflow_dispatch: # manual run via the Actions UI
+
+permissions:
+  contents: write # peter-evans needs this to push the sync branch
+  pull-requests: write # to open / update the sync PR
+  issues: write # to file an issue if the sync fails
+
+concurrency:
+  group: sync-greenlake-oas
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.MIST_SYNC_PAT }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch + validate GreenLake OAS
+        run: python3 .github/scripts/fetch_greenlake_oas.py
+
+      - name: Stamp UTC date
+        id: date
+        run: echo "today=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update sync PR
+        id: cpr
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.MIST_SYNC_PAT }}
+          branch: chore/sync-greenlake-oas
+          delete-branch: true
+          add-paths: |
+            vendor/greenlake/**
+          commit-message: |
+            chore(vendor): sync HPE GreenLake OAS (${{ steps.date.outputs.today }}) (auto)
+
+            Source: https://developer.greenlake.hpe.com (Redocly /_bundle/<spec>.json)
+
+            Tool regeneration not run by this workflow — maintainer regenerates the
+            GreenLake tool surface at release time before tagging.
+          title: "chore(vendor): sync HPE GreenLake OAS"
+          body: |
+            Automated weekly sync of the HPE GreenLake public northbound OpenAPI specs.
+
+            - **Source**: https://developer.greenlake.hpe.com (`/_bundle/.../<spec>.json?download`)
+            - **Vendored to**: `vendor/greenlake/` (driven by `sources.json`)
+            - Check the run log for `::warning::` lines about **newly-published
+              services** to add to `sources.json`.
+
+            Tool regeneration is **not** triggered by this PR — the maintainer
+            regenerates the GreenLake tool surface at release time so tool-surface
+            changes are reviewed before shipping.
+
+            This PR has auto-merge enabled and will merge once required status
+            checks pass.
+
+      - name: Enable auto-merge on the sync PR
+        if: steps.cpr.outputs.pull-request-number
+        run: gh pr merge --auto --squash "${{ steps.cpr.outputs.pull-request-number }}"
+        env:
+          GH_TOKEN: ${{ secrets.MIST_SYNC_PAT }}
+
+      - name: File issue on sync failure
+        if: failure()
+        run: |
+          gh issue create \
+            --title "GreenLake OAS sync failed on $(date -u +%Y-%m-%d)" \
+            --body "The scheduled GreenLake OAS sync failed today. The vendored copies under \`vendor/greenlake/\` were NOT updated.
+
+          Possible causes:
+          - The portal changed how it serves specs (the \`/_bundle/.../<spec>.json?download\` paths moved or casing changed)
+          - A spec stopped parsing as OpenAPI (upstream regression)
+          - Network failure mid-sync
+
+          Action: re-run the workflow once the portal is stable, or update \`vendor/greenlake/sources.json\` / \`.github/scripts/fetch_greenlake_oas.py\` if the portal structure changed." \
+            --label "ci/cd"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
