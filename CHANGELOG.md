@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.6.0] - 2026-06-29
+
+**Minor — GreenLake bulk device onboarding (`greenlake_bulk_add_devices`) with a choose-your-source data flow.** First GreenLake write tool: onboard up to 10,000 devices from a CSV in one call, with rate-limiting, resume-on-failure, and optional subscription/service/location/tags assignment. The operator chooses how to provide the list — **file upload** (read server-side; never enters model context — best for large lists), **copy/paste**, or a local path. Builds on PR #379.
+
+### Added
+- `greenlake_bulk_add_devices` — bulk-add GreenLake devices. Three mutually-exclusive sources: **`csv_filename`** (operator-uploaded file, read SERVER-SIDE via the `FileUpload` provider so a 10k-row CSV never enters model context), **`csv_text`** (paste — the AI sees it; small lists only), and **`csv_path`** (local / CLI). 5 devices/batch at 5 POST/min; enrichment PATCHes at 20/min. Resumes from a `.cache.json` checkpoint. Returns an 18-field envelope with per-phase counts + per-row failure reasons. The tool description instructs the AI to ASK the operator which source to use (upload vs paste, with the paste-sees-the-data caveat).
+- **Server-side upload read** — `create_server` surfaces the `FileUpload` provider on `lifespan_context` (`file_upload_provider`) so tools can call `provider.on_read(name, ctx)`; `bulk_add._read_uploaded_csv` is the first context-clean server-side read of an upload (400 no-capability / 404 not-found / 502 read-fail).
+- `ENABLE_GREENLAKE_WRITE_TOOLS` — gates the tool (default `false`); wired into `ElicitationMiddleware` + the `Visibility` transform like every other platform.
+- `aiolimiter>=1.2.1` dependency for async rate limiting.
+
+### Notes
+- Write gate + `confirm_gated_invoke` confirmation fire before any API call. All failure paths `raise ToolError` (structured). `AsyncLimiter` is per-invocation (no cross-loop reuse). GreenLake: 10 → 11 tools (hidden until the write flag is set).
+- **Write path live-verified against a real HPE device** (2026-06-28 add + service PATCH; 2026-06-29 location + tags PATCH). Confirmed: `POST /devices/v1/devices` → `202`+async-op (`postDevicesResponse`); `PATCH /devices/v2beta1/devices?id=<uuid>` for service/subscription/location/tags → `202`+`Location` → async-op `SUCCEEDED` (`PatchDeviceResponseV2`, `result.succeededDevices`). Location and tags are PATCHable post-add (not add-time-only).
+
 ## [3.4.5.10] - 2026-06-29
 
 **Patch — docs(skills): runbook state-machine + Generative-UI fallback guard (#531).** Last item of the small-model robustness audit (#513–#534).
@@ -876,7 +890,6 @@ All are input-validation failures → `status_code: 400`. No behavior change bey
 Updated `tests/unit/test_central_gateway_clusters.py` to assert the structured payload; added `tests/unit/test_central_aos8_toolerror_contract.py` locking the two shared helpers. Full suite green (1484 passed, 1 skipped); ruff/format/mypy clean.
 
 > Note: one more site of the same class exists in **Mist** (`_client.py` org_id guard), left out of this patch because the cleanup was scoped to Central + AOS 8.
-
 ## [3.2.1.9] - 2026-05-21
 
 **Patch — add per-entry policy-group tools.** Follow-up to the v3.2.1.8 spec review, which found the `policy-group` spec exposes a per-entry item path (`/policy-groups/policy-group/policy-group-list/{name}`, full CRUD) that the hand-curated tools didn't wrap — they only managed at the collection level, and a docstring incorrectly claimed "there is no per-name path."
