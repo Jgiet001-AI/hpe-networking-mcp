@@ -268,45 +268,58 @@ class TestCodeModeErrorReturns:
     contract" for the full writeup.
     """
 
-    @pytest.mark.asyncio
-    async def test_greenlake_get_user_details_empty_id_raises_tool_error(self):
-        """Empty-string id raises ToolError(400) instead of returning a string.
-        The registry shim (with ``_registry.mcp = None`` at import time in
-        tests) returns the raw function, so ``ctx`` can be ``None`` for the
-        early-validation path that never touches it.
+    def test_greenlake_request_raises_structured_toolerror_on_4xx(self):
+        """GreenLake is now spec-generated: every tool routes through
+        ``greenlake_request``, whose ``_raise_for_status`` converts a non-2xx
+        response into a structured ``ToolError`` (the codified contract). The
+        former hand-curated per-tool validation tests were removed with those
+        modules; this pins the contract at the transport layer instead.
         """
+        import httpx
         from fastmcp.exceptions import ToolError
 
-        from hpe_networking_mcp.platforms.greenlake.tools.users import (
-            greenlake_get_user_details,
-        )
+        from hpe_networking_mcp.platforms.greenlake.client import _raise_for_status
 
+        resp = httpx.Response(404, json={"message": "not found"})
         with pytest.raises(ToolError) as exc_info:
-            await greenlake_get_user_details(None, id="")  # type: ignore[arg-type]
-        assert exc_info.value.args[0]["status_code"] == 400
+            _raise_for_status("GET", "/devices/v1/devices/x", resp)
+        assert exc_info.value.args[0]["status_code"] == 404
 
-    @pytest.mark.asyncio
-    async def test_greenlake_get_workspace_empty_raises_tool_error(self):
+    def test_greenlake_raise_for_status_treats_3xx_as_error(self):
+        """3xx is NOT success — httpx doesn't follow redirects, so a regional/proxy
+        redirect must surface as a structured ToolError, not a fake 2xx body."""
+        import httpx
         from fastmcp.exceptions import ToolError
 
-        from hpe_networking_mcp.platforms.greenlake.tools.workspaces import (
-            greenlake_get_workspace,
+        from hpe_networking_mcp.platforms.greenlake.client import _raise_for_status
+
+        resp = httpx.Response(302, headers={"location": "https://elsewhere/x"})
+        with pytest.raises(ToolError) as exc_info:
+            _raise_for_status("GET", "/devices/v1/devices", resp)
+        assert exc_info.value.args[0]["status_code"] == 302
+
+    def test_normalize_location_relative_and_same_origin(self):
+        """Relative → leading slash; absolute same-origin → path?query only."""
+        from hpe_networking_mcp.platforms.greenlake.client import _normalize_location
+
+        base = "https://global.api.greenlake.hpe.com"
+        assert _normalize_location(base, "async-operations/v1/abc") == "/async-operations/v1/abc"
+        assert _normalize_location(base, "/async-operations/v1/abc") == "/async-operations/v1/abc"
+        assert (
+            _normalize_location(base, f"{base}/async-operations/v1/abc?wait=true")
+            == "/async-operations/v1/abc?wait=true"
         )
 
+    def test_normalize_location_rejects_cross_origin(self):
+        """An absolute Location to a different host must raise, not concatenate."""
+        from fastmcp.exceptions import ToolError
+
+        from hpe_networking_mcp.platforms.greenlake.client import _normalize_location
+
+        base = "https://global.api.greenlake.hpe.com"
         with pytest.raises(ToolError) as exc_info:
-            await greenlake_get_workspace(None, workspaceId="")  # type: ignore[arg-type]
-        assert exc_info.value.args[0]["status_code"] == 400
-
-    def test_greenlake_users_coerce_int_still_raises_for_helper_callers(self):
-        """``_coerce_int`` remains a raising helper — its ValueError is caught
-        by the public tool entry's param-build try/except and re-raised as a
-        ToolError(400). Pinning this so we don't accidentally rewrite the
-        helper to return error sentinels and silently break callers.
-        """
-        from hpe_networking_mcp.platforms.greenlake.tools.users import _coerce_int
-
-        with pytest.raises(ValueError):
-            _coerce_int("abc", "limit")
+            _normalize_location(base, "https://other-host.example.com/async-operations/v1/abc")
+        assert exc_info.value.args[0]["status_code"] == 502
 
     # NOTE (v3.2.1.0): the old ``test_no_raise_in_greenlake_tool_files`` AST
     # guard was removed — it enforced the obsolete no-raise rule. GreenLake
