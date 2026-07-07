@@ -219,16 +219,20 @@ return {
 
 ### Step 2 — Render the dashboard (Generative UI)
 
-Call `generate_prefab_ui` directly (top-level tool). Pass the Step 1 return as
-the `data` argument — **each top-level key becomes a global** inside `code`
-(`site`, `device_summary`, `client_summary`, `alert_summary`, `devices`,
-`alerts`, `nac`). There is NO `data` variable in the sandbox.
+Call `generate_prefab_ui` directly (top-level tool). Your `code` MUST be
+**self-contained**: inline the Step 1 values as Python literals at the TOP of the
+`code` (`site = {...}`, `device_summary = {...}`, `devices = [...]`, `alerts = [...]`,
+`nac = {...}`, etc.), then reference those names. Do **NOT** pass the `data`
+argument — the widget executes your `code` in the browser *as it streams* and does
+NOT receive the `data` argument's globals there, so any name that came only from
+`data` raises `NameError: name 'X' is not defined` and the widget hangs forever on
+"waiting for content". Everything the `code` references must be defined in the `code`.
 
 If you need to confirm component names, call `search_prefab_components` ONCE
 with a broad query — don't fan out. The common set for this board:
 
 - `metric` — KPI cards: Health score, Devices total, Clients total, Alerts (show Critical as the delta/secondary).
-- `data_table` — the device list (name / type / model / status / ip) and the alert list (severity / name / device_type / created_at).
+- `data_table` — the device list (name / type / model / status / ip) and the alert list (severity / name / device_type / created_at). **`DataTable` REQUIRES explicit `columns=[DataTableColumn(key=..., header=...)]`** — a bare `DataTable(rows=[...])` over plain dicts errors (auto-columns work only for DataFrames). Import `DataTableColumn` alongside `DataTable`.
 - `charts` — a small bar chart of `device_summary["Details"]` (Good/Fair/Poor per device type), or use `badge` rows if a chart is overkill.
 - `badge` / `dot` — status pills (Good=green, Fair=amber, Poor/Down=red; Critical alerts=red).
 - `column` / `row` / `grid` + `heading` — layout.
@@ -243,9 +247,21 @@ with a broad query — don't fan out. The common set for this board:
   the count AND breakdowns are themselves partial — don't present them as complete.
 
 Build with the context-manager form (children register onto the open
-container), assign a `PrefabApp`, e.g.:
+container), assign a `PrefabApp`. Start the `code` with your Step 1 values
+inlined as literals (substitute the REAL values you gathered), e.g.:
 
 ```python
+# --- Step 1 values, inlined as literals — self-contained, NO `data` argument ---
+site = {"name": "HQ", "health": {"Summary": 92}}
+device_summary = {"Summary": {"Total": 42}, "Details": [...]}
+client_summary = {"Total": 128}
+alert_summary = {"Total": 3, "Critical": 1}
+devices = [...]   # rows from central_get_devices (already unwrapped from the envelope)
+alerts = [...]    # rows from central_get_alerts
+nac = {"status": "ok", "active_count": 0, "by_role": {}, "by_ssid": {}, "sessions": [],
+       "sessions_truncated": False, "aggregate_truncated": False}
+
+# --- build the view (everything below references only names defined above) ---
 with Column(gap=4) as view:
     Heading(f"{site['name']} — site dashboard")
     with Row(gap=4):
@@ -255,21 +271,39 @@ with Column(gap=4) as view:
         Metric(label="Alerts", value=alert_summary.get("Total"),
                description=f'{alert_summary.get("Critical", 0)} critical')
     Heading("Devices")
-    DataTable(rows=devices)
+    DataTable(columns=[
+        DataTableColumn(key="name", header="Device", sortable=True),
+        DataTableColumn(key="type", header="Type", sortable=True),
+        DataTableColumn(key="model", header="Model"),
+        DataTableColumn(key="status", header="Status", sortable=True),
+        DataTableColumn(key="ipv4", header="IP"),
+    ], rows=devices, search=True)
     Heading("Active alerts")
-    DataTable(rows=alerts)
+    DataTable(columns=[
+        DataTableColumn(key="severity", header="Severity", sortable=True),
+        DataTableColumn(key="name", header="Alert", sortable=True),
+        DataTableColumn(key="device_type", header="Device Type"),
+        DataTableColumn(key="created_at", header="Raised", sortable=True),
+    ], rows=alerts, search=True)
     if nac["status"] == "ok":   # APs queried — render even at 0 active (informative)
         Heading("ClearPass — active NAC sessions on this site's APs")
         with Row(gap=4):
             Metric(label="Active clients", value=nac["active_count"])
         if nac["aggregate_truncated"]:
             Text(f"⚠ Capped at {nac['active_count']} sessions — count and breakdowns below are PARTIAL.")
-        DataTable(rows=[{"role": k, "clients": v} for k, v in nac["by_role"].items()])
-        DataTable(rows=[{"ssid": k, "clients": v} for k, v in nac["by_ssid"].items()])
+        DataTable(columns=[DataTableColumn(key="role", header="Role"),
+                           DataTableColumn(key="clients", header="Clients", sortable=True)],
+                  rows=[{"role": k, "clients": v} for k, v in nac["by_role"].items()])
+        DataTable(columns=[DataTableColumn(key="ssid", header="SSID"),
+                           DataTableColumn(key="clients", header="Clients", sortable=True)],
+                  rows=[{"ssid": k, "clients": v} for k, v in nac["by_ssid"].items()])
         if nac["sessions_truncated"]:
             note = "counts above are partial" if nac["aggregate_truncated"] else "counts above are complete"
             Text(f"Showing first {len(nac['sessions'])} of {nac['active_count']} active sessions ({note}).")
-        DataTable(rows=nac["sessions"])
+        # columns: pick the session keys you gathered (e.g. client mac, ip, role, ssid, ap_name)
+        DataTable(columns=[DataTableColumn(key=k, header=k.replace("_", " ").title())
+                           for k in (nac["sessions"][0].keys() if nac["sessions"] else [])],
+                  rows=nac["sessions"])
 app = PrefabApp(view=view)
 ```
 
